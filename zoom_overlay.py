@@ -29,6 +29,7 @@ import sys
 import config
 
 user32 = ctypes.windll.user32
+kernel32 = ctypes.windll.kernel32
 gdi32 = ctypes.windll.gdi32
 magnification = ctypes.WinDLL("Magnification.dll")
 shcore = getattr(ctypes.windll, "shcore", None)
@@ -101,8 +102,8 @@ class WNDCLASSEXW(ctypes.Structure):
 user32.GetSystemMetrics.restype = ctypes.c_int
 user32.GetSystemMetrics.argtypes = [ctypes.c_int]
 
-user32.GetModuleHandleW.restype = wt.HINSTANCE
-user32.GetModuleHandleW.argtypes = [wt.LPCWSTR]
+kernel32.GetModuleHandleW.restype = wt.HINSTANCE
+kernel32.GetModuleHandleW.argtypes = [wt.LPCWSTR]
 
 user32.RegisterClassExW.restype = wt.ATOM
 user32.RegisterClassExW.argtypes = [ctypes.POINTER(WNDCLASSEXW)]
@@ -178,7 +179,7 @@ class ZoomApp:
         wc = WNDCLASSEXW()
         wc.cbSize = ctypes.sizeof(WNDCLASSEXW)
         wc.lpfnWndProc = self.wnd_proc_ref
-        wc.hInstance = user32.GetModuleHandleW(None)
+        wc.hInstance = kernel32.GetModuleHandleW(None)
         wc.lpszClassName = "ValorantZoomHost"
         if not user32.RegisterClassExW(ctypes.byref(wc)):
             raise RuntimeError("RegisterClassExW fallo")
@@ -191,7 +192,7 @@ class ZoomApp:
             "ValorantZoom",
             WS_POPUP,
             0, 0, self.size, self.size,
-            None, None, user32.GetModuleHandleW(None), None,
+            None, None, kernel32.GetModuleHandleW(None), None,
         )
         self.mag_window = user32.CreateWindowExW(
             0,
@@ -199,7 +200,7 @@ class ZoomApp:
             None,
             WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
             0, 0, self.size, self.size,
-            self.host, None, user32.GetModuleHandleW(None), None,
+            self.host, None, kernel32.GetModuleHandleW(None), None,
         )
         if not self.host or not self.mag_window:
             raise RuntimeError("No se pudieron crear las ventanas")
