@@ -102,6 +102,12 @@ class WNDCLASSEXW(ctypes.Structure):
 user32.GetSystemMetrics.restype = ctypes.c_int
 user32.GetSystemMetrics.argtypes = [ctypes.c_int]
 
+user32.GetLastError.restype = ctypes.c_ulong
+user32.GetLastError.argtypes = []
+
+user32.GetClassInfoW.restype = ctypes.c_bool
+user32.GetClassInfoW.argtypes = [wt.HINSTANCE, wt.LPCWSTR, ctypes.POINTER(WNDCLASSEXW)]
+
 kernel32.GetModuleHandleW.restype = wt.HINSTANCE
 kernel32.GetModuleHandleW.argtypes = [wt.LPCWSTR]
 
@@ -165,6 +171,13 @@ class ZoomApp:
         self.zoom = config.ZOOM
         self.size = config.LENS_SIZE
 
+    @staticmethod
+    def _err_detail(err):
+        try:
+            return repr(ctypes.WinError(err))
+        except Exception:
+            return f"codigo de error {err:#010x}"
+
     def _make_dpi_aware(self):
         if shcore is not None:
             try:
@@ -182,7 +195,13 @@ class ZoomApp:
         wc.hInstance = kernel32.GetModuleHandleW(None)
         wc.lpszClassName = "ValorantZoomHost"
         if not user32.RegisterClassExW(ctypes.byref(wc)):
-            raise RuntimeError("RegisterClassExW fallo")
+            err = user32.GetLastError()
+            raise RuntimeError("RegisterClassExW de la ventana host fallo: " + self._err_detail(err))
+
+    def _magnifier_available(self):
+        info = WNDCLASSEXW()
+        info.cbSize = ctypes.sizeof(WNDCLASSEXW)
+        return user32.GetClassInfoW(None, "ScreenMagnifier", ctypes.byref(info))
 
     def _create_windows(self):
         ex_style = WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE
@@ -194,6 +213,9 @@ class ZoomApp:
             0, 0, self.size, self.size,
             None, None, kernel32.GetModuleHandleW(None), None,
         )
+        if not self.host:
+            err = user32.GetLastError()
+            raise RuntimeError("No se pudo crear la ventana host: " + self._err_detail(err))
         self.mag_window = user32.CreateWindowExW(
             0,
             "ScreenMagnifier",
@@ -202,8 +224,9 @@ class ZoomApp:
             0, 0, self.size, self.size,
             self.host, None, kernel32.GetModuleHandleW(None), None,
         )
-        if not self.host or not self.mag_window:
-            raise RuntimeError("No se pudieron crear las ventanas")
+        if not self.mag_window:
+            err = user32.GetLastError()
+            raise RuntimeError("No se pudo crear la ventana magnifier: " + self._err_detail(err))
 
     def _register_hotkeys(self):
         mods = config.HOTKEY_MODS
@@ -216,7 +239,12 @@ class ZoomApp:
     def setup(self):
         self._make_dpi_aware()
         if not magnification.MagInitialize():
-            raise RuntimeError("MagInitialize fallo: Magnification API no disponible")
+            raise RuntimeError("MagInitialize fallo: la API de magnificacion no se pudo inicializar")
+        if not self._magnifier_available():
+            raise RuntimeError(
+                "La clase 'ScreenMagnifier' no esta registrada en este sistema. "
+                "Reinicia el PC o instala las actualizaciones de Windows."
+            )
         self._register_class()
         self._create_windows()
         self._register_hotkeys()
