@@ -60,12 +60,14 @@ LWA_ALPHA = 0x00000002
 
 WM_HOTKEY = 0x0312
 WM_DESTROY = 0x0002
+WM_TIMER = 0x0113
 
 ID_TOGGLE = 1
 ID_ZOOM_IN = 2
 ID_ZOOM_OUT = 3
 ID_SIZE_UP = 4
 ID_SIZE_DOWN = 5
+ID_TIMER_REFRESH = 100
 
 LRESULT = ctypes.c_ssize_t
 WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM)
@@ -123,8 +125,20 @@ user32.CreateWindowExW.argtypes = [
 user32.SetLayeredWindowAttributes.restype = ctypes.c_bool
 user32.SetLayeredWindowAttributes.argtypes = [wt.HWND, wt.DWORD, wt.BYTE, wt.DWORD]
 
+user32.GetClassInfoW.restype = ctypes.c_bool
+user32.GetClassInfoW.argtypes = [wt.HINSTANCE, wt.LPCWSTR, ctypes.POINTER(WNDCLASSEXW)]
+
 user32.DefWindowProcW.restype = LRESULT
 user32.DefWindowProcW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
+
+user32.SetTimer.restype = ctypes.c_void_p
+user32.SetTimer.argtypes = [wt.HWND, ctypes.c_void_p, wt.UINT, ctypes.c_void_p]
+
+user32.KillTimer.restype = ctypes.c_bool
+user32.KillTimer.argtypes = [wt.HWND, ctypes.c_void_p]
+
+user32.InvalidateRect.restype = ctypes.c_bool
+user32.InvalidateRect.argtypes = [wt.HWND, ctypes.c_void_p, ctypes.c_bool]
 
 user32.SetWindowPos.restype = ctypes.c_bool
 user32.SetWindowPos.argtypes = [
@@ -170,6 +184,7 @@ class ZoomApp:
         self.mag_window = None
         self.wnd_proc_ref = None
         self.enabled = False
+        self.debug = False
         self.zoom = config.ZOOM
         self.size = config.LENS_SIZE
 
@@ -199,6 +214,33 @@ class ZoomApp:
         if not user32.RegisterClassExW(ctypes.byref(wc)):
             err = ctypes.get_last_error()
             raise RuntimeError("RegisterClassExW de la ventana host fallo: " + self._err_detail(err))
+
+    def _class_exists(self, hinst):
+        info = WNDCLASSEXW()
+        info.cbSize = ctypes.sizeof(WNDCLASSEXW)
+        return bool(user32.GetClassInfoW(hinst, "ScreenMagnifier", ctypes.byref(info)))
+
+    def _ensure_magnifier_class(self):
+        if self._class_exists(None):
+            if self.debug:
+                print("[debug] Clase ScreenMagnifier presente (sistema)")
+            return
+        hmod = kernel32.GetModuleHandleW("Magnification.dll")
+        if hmod and self._class_exists(hmod):
+            if self.debug:
+                print("[debug] Clase ScreenMagnifier presente (registrada por Magnification.dll)")
+            return
+        if self.debug:
+            print("[debug] Clase ScreenMagnifier NO registrada -> la registro manualmente")
+        wc = WNDCLASSEXW()
+        wc.cbSize = ctypes.sizeof(WNDCLASSEXW)
+        wc.lpfnWndProc = ctypes.cast(user32.DefWindowProcW, WNDPROC)
+        wc.hInstance = kernel32.GetModuleHandleW(None)
+        wc.lpszClassName = "ScreenMagnifier"
+        if not user32.RegisterClassExW(ctypes.byref(wc)):
+            err = ctypes.get_last_error()
+            if self.debug:
+                print("[debug] Registro manual de ScreenMagnifier fallo:", self._err_detail(err))
 
     def _create_windows(self):
         ex_style = WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE
@@ -238,10 +280,19 @@ class ZoomApp:
         self._make_dpi_aware()
         if not magnification.MagInitialize():
             raise RuntimeError("MagInitialize fallo: la API de magnificacion no se pudo inicializar")
+        if self.debug:
+            print("[debug] MagInitialize() OK")
+            arch = "x64" if ctypes.sizeof(ctypes.c_void_p) * 8 == 64 else "x86"
+            print(f"[debug] Python {arch} | exec: {sys.executable}")
+        self._ensure_magnifier_class()
         self._register_class()
         self._create_windows()
         self._register_hotkeys()
         self._apply_region()
+        user32.SetTimer(self.host, ID_TIMER_REFRESH, config.REFRESH_MS, None)
+        if self.debug:
+            print(f"[debug] host={self.host:#x} mag_window={self.mag_window:#x}"
+                  f" zoom={self.zoom} size={self.size} refresh={config.REFRESH_MS}ms")
 
     def screen_center(self):
         return user32.GetSystemMetrics(0) // 2, user32.GetSystemMetrics(1) // 2
@@ -271,6 +322,12 @@ class ZoomApp:
         transform.m[1][1] = self.zoom
         transform.m[2][2] = 1.0
         magnification.MagSetWindowTransform(self.mag_window, ctypes.byref(transform))
+
+    def _refresh(self):
+        if not self.enabled:
+            return
+        self.layout()
+        user32.InvalidateRect(self.mag_window, None, True)
 
     def toggle(self):
         self.enabled = not self.enabled
@@ -312,12 +369,16 @@ class ZoomApp:
         if msg == WM_HOTKEY:
             self._on_hotkey(wparam)
             return 0
+        if msg == WM_TIMER and wparam == ID_TIMER_REFRESH:
+            self._refresh()
+            return 0
         if msg == WM_DESTROY:
             user32.PostQuitMessage(0)
             return 0
         return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
     def cleanup(self):
+        user32.KillTimer(self.host, ID_TIMER_REFRESH)
         user32.UnregisterHotKey(self.host, ID_TOGGLE)
         user32.UnregisterHotKey(self.host, ID_ZOOM_IN)
         user32.UnregisterHotKey(self.host, ID_ZOOM_OUT)
@@ -330,6 +391,7 @@ class ZoomApp:
 
 def main():
     app = ZoomApp()
+    app.debug = "--debug" in sys.argv
     try:
         app.setup()
     except Exception as exc:
