@@ -102,11 +102,11 @@ class WNDCLASSEXW(ctypes.Structure):
 user32.GetSystemMetrics.restype = ctypes.c_int
 user32.GetSystemMetrics.argtypes = [ctypes.c_int]
 
-user32.GetLastError.restype = ctypes.c_ulong
-user32.GetLastError.argtypes = []
-
 user32.GetClassInfoW.restype = ctypes.c_bool
 user32.GetClassInfoW.argtypes = [wt.HINSTANCE, wt.LPCWSTR, ctypes.POINTER(WNDCLASSEXW)]
+
+kernel32.GetLastError.restype = ctypes.c_ulong
+kernel32.GetLastError.argtypes = []
 
 kernel32.GetModuleHandleW.restype = wt.HINSTANCE
 kernel32.GetModuleHandleW.argtypes = [wt.LPCWSTR]
@@ -195,7 +195,7 @@ class ZoomApp:
         wc.hInstance = kernel32.GetModuleHandleW(None)
         wc.lpszClassName = "ValorantZoomHost"
         if not user32.RegisterClassExW(ctypes.byref(wc)):
-            err = user32.GetLastError()
+            err = kernel32.GetLastError()
             raise RuntimeError("RegisterClassExW de la ventana host fallo: " + self._err_detail(err))
 
     def _magnifier_available(self):
@@ -214,7 +214,7 @@ class ZoomApp:
             None, None, kernel32.GetModuleHandleW(None), None,
         )
         if not self.host:
-            err = user32.GetLastError()
+            err = kernel32.GetLastError()
             raise RuntimeError("No se pudo crear la ventana host: " + self._err_detail(err))
         self.mag_window = user32.CreateWindowExW(
             0,
@@ -225,7 +225,7 @@ class ZoomApp:
             self.host, None, kernel32.GetModuleHandleW(None), None,
         )
         if not self.mag_window:
-            err = user32.GetLastError()
+            err = kernel32.GetLastError()
             raise RuntimeError("No se pudo crear la ventana magnifier: " + self._err_detail(err))
 
     def _register_hotkeys(self):
