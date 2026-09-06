@@ -14,15 +14,16 @@ Seguridad (por que es externo y de riesgo bajo):
     - No inyecta DLLs, no lee memoria del juego, no modifica archivos del juego,
       no automatiza entrada.
     - Captura GDI pura: cada frame se renderiza la ventana en primer plano (el
-      juego en modo Borderless) mediante PrintWindow hacia un DC en memoria, el
-      rectangulo central se estira con StretchBlt sobre un bitmap DIB 32-bit y
-      este se presenta con UpdateLayeredWindow (la tecnica estandar de overlays
-      transparentes; no depende del DC de la ventana ni del registro de clases
-      de Windows). Al no ocultar la lente nunca se captura la lente a si misma
-      (sin retroalimentacion) y no hay parpadeo. No usa la Magnification API.
-    - Ventana WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE:
-      no roba foco ni clics y pertenece a la clase de overlays que Vanguard tolera
-      (mismo precedente que Discord / Steam / OBS).
+      juego en modo Borderless) mediante PrintWindow hacia un DC en memoria y el
+      rectangulo central se estira con StretchBlt directamente sobre el DC de la
+      lente. La lente es una ventana normal (sin estilos de capa) dibujada con
+      GDI clasico, que siempre se muestra; los clics la atraviesan via
+      WM_NCHITTEST=HTTRANSPARENT. Al no ocultar la lente nunca se captura la
+      lente a si misma (sin retroalimentacion) y no hay parpadeo. No usa la
+      Magnification API ni el registro de clases de Windows.
+    - Ventana WS_EX_TOPMOST | WS_EX_NOACTIVATE con region circular (esquinas
+      invisibles): no roba foco ni clics y pertenece a la clase de overlays que
+      Vanguard tolera (mismo precedente que Discord / Steam / OBS).
     - Requiere Valorant en modo Borderless; el fullscreen exclusivo oculta
       cualquier overlay a nivel de sistema operativo. Sin Valorant tambien
       funciona (amplia la ventana que este enfocada, p.ej. el Explorador).
@@ -47,8 +48,6 @@ WS_POPUP = 0x80000000
 WS_CLIPCHILDREN = 0x02000000
 
 WS_EX_TOPMOST = 0x00000008
-WS_EX_TRANSPARENT = 0x00000020
-WS_EX_LAYERED = 0x00080000
 WS_EX_NOACTIVATE = 0x08000000
 
 SW_HIDE = 0
@@ -59,11 +58,14 @@ SWP_SHOWWINDOW = 0x0040
 SWP_NOMOVE = 0x0002
 SWP_NOSIZE = 0x0001
 
-LWA_ALPHA = 0x00000002
-
 WM_HOTKEY = 0x0312
 WM_DESTROY = 0x0002
 WM_TIMER = 0x0113
+WM_PAINT = 0x000F
+WM_ERASEBKGND = 0x0014
+WM_NCHITTEST = 0x0084
+
+HTTRANSPARENT = -1
 
 ID_TOGGLE = 1
 ID_ZOOM_IN = 2
@@ -77,11 +79,6 @@ HALFTONE = 4
 PS_SOLID = 0
 NULL_BRUSH = 5
 PW_RENDERFULLCONTENT = 0x00000002
-BI_RGB = 0
-DIB_RGB_COLORS = 0
-ULW_ALPHA = 0x00000002
-AC_SRC_OVER = 0x00
-AC_SRC_ALPHA = 0x01
 
 LRESULT = ctypes.c_ssize_t
 WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM)
@@ -106,35 +103,14 @@ class WNDCLASSEXW(ctypes.Structure):
     ]
 
 
-class BITMAPINFOHEADER(ctypes.Structure):
+class PAINTSTRUCT(ctypes.Structure):
     _fields_ = [
-        ("biSize", wt.DWORD),
-        ("biWidth", ctypes.c_long),
-        ("biHeight", ctypes.c_long),
-        ("biPlanes", wt.WORD),
-        ("biBitCount", wt.WORD),
-        ("biCompression", wt.DWORD),
-        ("biSizeImage", wt.DWORD),
-        ("biXPelsPerMeter", ctypes.c_long),
-        ("biYPelsPerMeter", ctypes.c_long),
-        ("biClrUsed", wt.DWORD),
-        ("biClrImportant", wt.DWORD),
-    ]
-
-
-class BITMAPINFO(ctypes.Structure):
-    _fields_ = [
-        ("bmiHeader", BITMAPINFOHEADER),
-        ("bmiColors", wt.DWORD * 3),
-    ]
-
-
-class BLENDFUNCTION(ctypes.Structure):
-    _fields_ = [
-        ("BlendOp", wt.BYTE),
-        ("BlendFlags", wt.BYTE),
-        ("SourceConstantAlpha", wt.BYTE),
-        ("AlphaFormat", wt.BYTE),
+        ("hdc", wt.HDC),
+        ("fErase", ctypes.c_int),
+        ("rcPaint", wt.RECT),
+        ("fRestore", ctypes.c_int),
+        ("fIncUpdate", ctypes.c_int),
+        ("rgbReserved", ctypes.c_ubyte * 32),
     ]
 
 
@@ -218,25 +194,17 @@ user32.ClientToScreen.argtypes = [wt.HWND, ctypes.POINTER(wt.POINT)]
 user32.PrintWindow.restype = ctypes.c_bool
 user32.PrintWindow.argtypes = [wt.HWND, wt.HDC, wt.UINT]
 
-user32.UpdateLayeredWindow.restype = ctypes.c_bool
-user32.UpdateLayeredWindow.argtypes = [
-    wt.HWND, wt.HDC,
-    ctypes.POINTER(wt.POINT), ctypes.POINTER(wt.SIZE),
-    wt.HDC, ctypes.POINTER(wt.POINT),
-    wt.DWORD, ctypes.POINTER(BLENDFUNCTION), wt.DWORD,
-]
+user32.BeginPaint.restype = wt.HDC
+user32.BeginPaint.argtypes = [wt.HWND, ctypes.POINTER(PAINTSTRUCT)]
+
+user32.EndPaint.restype = ctypes.c_int
+user32.EndPaint.argtypes = [wt.HWND, ctypes.POINTER(PAINTSTRUCT)]
 
 gdi32.CreateCompatibleDC.restype = wt.HDC
 gdi32.CreateCompatibleDC.argtypes = [wt.HDC]
 
 gdi32.CreateCompatibleBitmap.restype = HGDIOBJ
 gdi32.CreateCompatibleBitmap.argtypes = [wt.HDC, ctypes.c_int, ctypes.c_int]
-
-gdi32.CreateDIBSection.restype = HGDIOBJ
-gdi32.CreateDIBSection.argtypes = [
-    wt.HDC, ctypes.POINTER(BITMAPINFO), wt.UINT,
-    ctypes.POINTER(ctypes.c_void_p), wt.HANDLE, wt.DWORD,
-]
 
 gdi32.BitBlt.restype = ctypes.c_bool
 gdi32.BitBlt.argtypes = [
@@ -288,11 +256,6 @@ class ZoomApp:
         self._tgt_dc = None
         self._tgt_bmp = None
         self._tgt_saved = None
-        self._dib_size = 0
-        self._dib_dc = None
-        self._dib_bmp = None
-        self._dib_saved = None
-        self._dib_bits = None
         self._hinted_target = False
 
     @staticmethod
@@ -334,7 +297,7 @@ class ZoomApp:
             raise RuntimeError("RegisterClassExW de la ventana host fallo: " + self._err_detail(err))
 
     def _create_window(self):
-        ex_style = WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE
+        ex_style = WS_EX_TOPMOST | WS_EX_NOACTIVATE
         self.host = user32.CreateWindowExW(
             ex_style,
             "ValorantZoomHost",
@@ -346,7 +309,6 @@ class ZoomApp:
         if not self.host:
             err = ctypes.get_last_error()
             raise RuntimeError("No se pudo crear la ventana lente: " + self._err_detail(err))
-        user32.SetLayeredWindowAttributes(self.host, 0, 255, LWA_ALPHA)
 
     def _register_hotkeys(self):
         mods = config.HOTKEY_MODS
@@ -422,36 +384,56 @@ class ZoomApp:
         self._tgt_w = w
         self._tgt_h = h
 
-    def _ensure_lens_surface(self):
-        if self._dib_dc and self._dib_size == self.size:
+    def _paint_now(self):
+        hdc = user32.GetDC(self.host)
+        if not hdc:
             return
-        if self._dib_dc:
-            if self._dib_saved:
-                gdi32.SelectObject(self._dib_dc, self._dib_saved)
-            if self._dib_bmp:
-                gdi32.DeleteObject(self._dib_bmp)
-            gdi32.DeleteDC(self._dib_dc)
-        size = self.size
-        hdc_screen = user32.GetDC(None)
         try:
-            self._dib_dc = gdi32.CreateCompatibleDC(None)
-            bmi = BITMAPINFO()
-            bmi.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
-            bmi.bmiHeader.biWidth = size
-            bmi.bmiHeader.biHeight = -size
-            bmi.bmiHeader.biPlanes = 1
-            bmi.bmiHeader.biBitCount = 32
-            bmi.bmiHeader.biCompression = BI_RGB
-            bits = ctypes.c_void_p()
-            self._dib_bmp = gdi32.CreateDIBSection(
-                hdc_screen, ctypes.byref(bmi), DIB_RGB_COLORS,
-                ctypes.byref(bits), None, 0,
-            )
-            self._dib_bits = bits
-            self._dib_saved = gdi32.SelectObject(self._dib_dc, self._dib_bmp)
-            self._dib_size = size
+            self._compose(hdc)
         finally:
-            user32.ReleaseDC(None, hdc_screen)
+            user32.ReleaseDC(self.host, hdc)
+
+    def _compose(self, hdc):
+        hwnd = self._target_window()
+        rect = wt.RECT()
+        if not user32.GetClientRect(hwnd, ctypes.byref(rect)):
+            return
+        w, h = rect.right, rect.bottom
+        if w <= 0 or h <= 0:
+            return
+        self._ensure_target_surface(w, h)
+        if not self._capture_target(hwnd, w, h):
+            if self.debug:
+                print("[debug] Captura fallo (PrintWindow y BitBlt), frame anterior", flush=True)
+            return
+        gdi32.SetStretchBltMode(hdc, HALFTONE)
+        pt = wt.POINT(0, 0)
+        user32.ClientToScreen(hwnd, ctypes.byref(pt))
+        cx, cy = self.screen_center()
+        srcw = max(1, int(round(self.size / self.zoom)))
+        srcx = (cx - pt.x) - srcw // 2
+        srcy = (cy - pt.y) - srcw // 2
+        if srcx < 0:
+            srcx = 0
+        if srcy < 0:
+            srcy = 0
+        if srcx + srcw > w:
+            srcw = w - srcx
+        if srcy + srcw > h:
+            srcw = h - srcy
+        if srcw > 0:
+            gdi32.StretchBlt(
+                hdc, 0, 0, self.size, self.size,
+                self._tgt_dc, srcx, srcy, srcw, srcw,
+                SRCCOPY,
+            )
+            if config.LENS_ROUNDED:
+                self._draw_border(hdc)
+        user32.SetWindowPos(
+            self.host, HWND_TOPMOST,
+            0, 0, 0, 0,
+            SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
+        )
 
     def _target_window(self):
         hwnd = user32.GetForegroundWindow()
@@ -476,68 +458,16 @@ class ZoomApp:
                 user32.ReleaseDC(hwnd, hdc_w)
         return ok
 
-    def _present(self):
-        hdc_screen = user32.GetDC(None)
-        if not hdc_screen:
-            return False
-        try:
-            cx, cy = self.screen_center()
-            half = self.size // 2
-            pos = wt.POINT(cx - half, cy - half)
-            dim = wt.SIZE(self.size, self.size)
-            origin = wt.POINT(0, 0)
-            blend = BLENDFUNCTION(AC_SRC_OVER, 0, 255, 0)
-            return user32.UpdateLayeredWindow(
-                self.host, hdc_screen, ctypes.byref(pos), ctypes.byref(dim),
-                self._dib_dc, ctypes.byref(origin), 0, ctypes.byref(blend), ULW_ALPHA,
-            )
-        finally:
-            user32.ReleaseDC(None, hdc_screen)
-
-    def _draw_lens(self):
-        if not self.enabled:
-            return
-        hwnd = self._target_window()
-        rect = wt.RECT()
-        if not user32.GetClientRect(hwnd, ctypes.byref(rect)):
-            return
-        w, h = rect.right, rect.bottom
-        if w <= 0 or h <= 0:
-            return
-        self._ensure_target_surface(w, h)
-        if not self._capture_target(hwnd, w, h):
-            if self.debug:
-                print("[debug] Captura fallo (PrintWindow y BitBlt), conservando ultimo frame", flush=True)
-            return
-        self._ensure_lens_surface()
-        gdi32.SetStretchBltMode(self._dib_dc, HALFTONE)
-        pt = wt.POINT(0, 0)
-        user32.ClientToScreen(hwnd, ctypes.byref(pt))
-        cx, cy = self.screen_center()
-        srcw = max(1, int(round(self.size / self.zoom)))
-        srcx = (cx - pt.x) - srcw // 2
-        srcy = (cy - pt.y) - srcw // 2
-        gdi32.StretchBlt(
-            self._dib_dc, 0, 0, self.size, self.size,
-            self._tgt_dc, srcx, srcy, srcw, srcw,
-            SRCCOPY,
-        )
-        if config.LENS_ROUNDED:
-            self._draw_border(self._dib_dc)
-        if not self._present() and self.debug:
-            err = ctypes.get_last_error()
-            print(f"[debug] UpdateLayeredWindow fallo: {self._err_detail(err)}", flush=True)
-
     def _refresh(self):
         if self.enabled:
-            self._draw_lens()
+            self._paint_now()
 
     def toggle(self):
         self.enabled = not self.enabled
         if self.enabled:
             print("[+] Activando lente...", flush=True)
             self.layout()
-            self._draw_lens()
+            self._paint_now()
             print("[+] Lente activada", flush=True)
         else:
             user32.ShowWindow(self.host, SW_HIDE)
@@ -550,13 +480,13 @@ class ZoomApp:
             self._apply_region()
             if self.enabled:
                 self.layout()
-                self._draw_lens()
+                self._paint_now()
 
     def set_zoom(self, zoom):
         self.zoom = max(config.ZOOM_MIN, min(config.ZOOM_MAX, zoom))
         if self.enabled:
             self.layout()
-            self._draw_lens()
+            self._paint_now()
 
     def _on_hotkey(self, hotkey_id):
         if hotkey_id == ID_TOGGLE:
@@ -578,6 +508,15 @@ class ZoomApp:
             if msg == WM_TIMER and wparam == ID_TIMER_REFRESH:
                 self._refresh()
                 return 0
+            if msg == WM_PAINT:
+                ps = PAINTSTRUCT()
+                user32.BeginPaint(hwnd, ctypes.byref(ps))
+                user32.EndPaint(hwnd, ctypes.byref(ps))
+                return 0
+            if msg == WM_ERASEBKGND:
+                return 1
+            if msg == WM_NCHITTEST:
+                return HTTRANSPARENT
             if msg == WM_DESTROY:
                 user32.PostQuitMessage(0)
                 return 0
@@ -599,12 +538,6 @@ class ZoomApp:
             if self._tgt_bmp:
                 gdi32.DeleteObject(self._tgt_bmp)
             gdi32.DeleteDC(self._tgt_dc)
-        if self._dib_dc:
-            if self._dib_saved:
-                gdi32.SelectObject(self._dib_dc, self._dib_saved)
-            if self._dib_bmp:
-                gdi32.DeleteObject(self._dib_bmp)
-            gdi32.DeleteDC(self._dib_dc)
         if self.host:
             user32.DestroyWindow(self.host)
 

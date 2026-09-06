@@ -2,7 +2,7 @@
 
 Lente de zoom externa para Valorant: una ventana tipo lupa dibujada sobre el centro de la pantalla que hace zoom en la mira **sin perder visión periférica**. Se activa/desactiva con una hotkey.
 
-> **Aviso de seguridad:** herramienta 100% externa — **no** inyecta DLLs, **no** lee memoria del juego, **no** modifica archivos del juego ni automatiza entrada. Cada frame se renderiza la ventana en primer plano (el juego en Borderless) mediante `PrintWindow` a un DC en memoria, el rectángulo central se estira con `StretchBlt` sobre un bitmap y se presenta con `UpdateLayeredWindow` (técnica estándar de overlays transparentes). La lente nunca se oculta, así que no se captura a sí misma (sin retroalimentación) y no hay parpadeo. Usa la clase de ventana overlay que Vanguard tolera (precedente: Discord / Steam / OBS). Aun así, no hay garantía permanente: usa una cuenta de prueba y bajo tu propio riesgo. Requiere **Valorant en modo Borderless** (el fullscreen exclusivo oculta cualquier overlay).
+> **Aviso de seguridad:** herramienta 100% externa — **no** inyecta DLLs, **no** lee memoria del juego, **no** modifica archivos del juego ni automatiza entrada. Cada frame se renderiza la ventana en primer plano (el juego en Borderless) mediante `PrintWindow` a un DC en memoria y el rectángulo central se estira con `StretchBlt` sobre el DC de la propia lente. La lente es una **ventana normal** (sin estilos de capa) dibujada con GDI clásico — la forma más estable del sistema — con región circular, y los clics la atraviesan mediante `WM_NCHITTEST=HTTRANSPARENT`. No se oculta nunca, así que no se captura a sí misma (sin retroalimentación) y no hay parpadeo. Usa la clase de overlay que Vanguard tolera (precedente: Discord / Steam / OBS). Aun así, no hay garantía permanente: usa una cuenta de prueba y bajo tu propio riesgo. Requiere **Valorant en modo Borderless** (el fullscreen exclusivo oculta cualquier overlay).
 
 ## Requisitos
 
@@ -62,7 +62,7 @@ junto al script. Si la lente se ve "suave", sube `REFRESH_MS` a `33`.
 - El crosshair del juego se ve agrandado dentro de la lente: puedes desactivar el crosshair in-game y usar la lente como punto de puntería, o reducir el zoom.
 - Si la lente aparece en negro sobre el juego, cambia a modo Borderless (el fullscreen exclusivo no permite capturar).
 - La lente amplía la ventana que esté enfocada: en juego es Valorant; en el escritorio, la ventana activa.
-- La lente es opaca (los píxeles se presentan con opacidad 255) y las esquinas fuera del círculo las recorta la región de la ventana.
+- La lente es opaca, con forma de círculo (las esquinas las recorta la región de la ventana), y los clics la atraviesan por completo.
 - Para cerrar: cierra la ventana de consola o pulsa `Ctrl + C`.
 
 ## Estructura
