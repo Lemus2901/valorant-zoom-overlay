@@ -2,7 +2,7 @@
 
 Lente de zoom externa para Valorant: una ventana tipo lupa dibujada sobre el centro de la pantalla que hace zoom en la mira **sin perder visión periférica**. Se activa/desactiva con una hotkey.
 
-> **Aviso de seguridad:** herramienta 100% externa — **no** inyecta DLLs, **no** lee memoria del juego, **no** modifica archivos del juego ni automatiza entrada. Captura y estira el sector de pantalla debajo del crosshair con GDI puro (`BitBlt`/`StretchBlt`), sin tocar la Magnification API del sistema, y usa la clase de ventana overlay que Vanguard tolera (precedente: Discord / Steam / OBS). Aun así, no hay garantía permanente: usa una cuenta de prueba y bajo tu propio riesgo. Requiere **Valorant en modo Borderless** (el fullscreen exclusivo oculta cualquier overlay).
+> **Aviso de seguridad:** herramienta 100% externa — **no** inyecta DLLs, **no** lee memoria del juego, **no** modifica archivos del juego ni automatiza entrada. Cada frame se renderiza la ventana en primer plano (el juego en Borderless) mediante `PrintWindow` a un DC en memoria y el rectángulo central se estira con `StretchBlt` sobre la lente; como la lente nunca se oculta, no se captura a sí misma (sin retroalimentación) y no hay parpadeo. Usa la clase de ventana overlay que Vanguard tolera (precedente: Discord / Steam / OBS). Aun así, no hay garantía permanente: usa una cuenta de prueba y bajo tu propio riesgo. Requiere **Valorant en modo Borderless** (el fullscreen exclusivo oculta cualquier overlay).
 
 ## Requisitos
 
@@ -22,6 +22,8 @@ Lente de zoom externa para Valorant: una ventana tipo lupa dibujada sobre el cen
 3. Entra a The Range o a una partida personalizada.
 4. Pulsa **Alt + X** para activar la lente sobre tu crosshair.
 5. Pulsa **Alt + X** de nuevo para desactivarla.
+
+> **Probarla sin Valorant (escritorio):** déjalo funcionando y pulsa **Alt + X** con una ventana maximizada enfocada (p. ej. el Explorador de archivos). La lente ampliará el contenido de esa ventana. Si el foco está en el escritorio, el programa te avisará en la consola.
 
 ## Controles
 
@@ -51,20 +53,22 @@ Edita `config.py` y reinicia el programa:
 ## Depuración
 
 Ejecuta `run.bat --debug` (o `python zoom_overlay.py --debug`) para imprimir
-arquitectura de Python, el handle de la ventana y la configuración activa. Si la
-lente parpadea, sube `REFRESH_MS` a `33`.
+arquitectura de Python, el handle de la ventana y la configuración activa. Si
+aparece algún fallo interno, se muestra en consola y se guarda en `error.log`
+junto al script. Si la lente se ve "suave", sube `REFRESH_MS` a `33`.
 
 ## Consejos
 
 - El crosshair del juego se ve agrandado dentro de la lente: puedes desactivar el crosshair in-game y usar la lente como punto de puntería, o reducir el zoom.
-- Si la lente aparece en negro sobre el juego, cambia a modo Borderless.
+- Si la lente aparece en negro sobre el juego, cambia a modo Borderless (el fullscreen exclusivo no permite capturar).
+- La lente amplía la ventana que esté enfocada: en juego es Valorant; en el escritorio, la ventana activa.
 - Para cerrar: cierra la ventana de consola o pulsa `Ctrl + C`.
 
 ## Estructura
 
 ```
 valorant_zoom/
-├── zoom_overlay.py   Código principal (ventana lupa + captura GDI)
+├── zoom_overlay.py   Código principal (ventana lupa + captura PrintWindow)
 ├── config.py         Configuración editable
 └── run.bat           Lanzador para Windows
 ```

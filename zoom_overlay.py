@@ -13,15 +13,18 @@ Hotkeys por defecto (todas con Alt):
 Seguridad (por que es externo y de riesgo bajo):
     - No inyecta DLLs, no lee memoria del juego, no modifica archivos del juego,
       no automatiza entrada.
-    - Captura GDI pura (BitBlt/StretchBlt) del sector de pantalla debajo de la
-      lente y lo estira sobre una ventana transparente al mouse: no usa la
-      Magnification API ni ninguna clase de Windows, por lo que no hay nada que
-      dependa del registro de clases del sistema.
+    - Captura GDI pura: cada frame se renderiza la ventana en primer plano (el
+      juego en modo Borderless) mediante PrintWindow hacia un DC en memoria y el
+      rectangulo central se estira con StretchBlt sobre la lente. Al no ocultar
+      la lente nunca se captura la lente a si misma (sin retroalimentacion) y no
+      hay parpadeo. No usa la Magnification API ni ninguna clase de Windows por
+      lo que no hay nada que dependa del registro de clases del sistema.
     - Ventana WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE:
       no roba foco ni clics y pertenece a la clase de overlays que Vanguard tolera
       (mismo precedente que Discord / Steam / OBS).
     - Requiere Valorant en modo Borderless; el fullscreen exclusivo oculta
-      cualquier overlay a nivel de sistema operativo.
+      cualquier overlay a nivel de sistema operativo. Sin Valorant tambien
+      funciona (amplia la ventana que este enfocada, p.ej. el Explorador).
 """
 
 import ctypes
@@ -72,6 +75,7 @@ SRCCOPY = 0x00CC0020
 HALFTONE = 4
 PS_SOLID = 0
 NULL_BRUSH = 5
+PW_RENDERFULLCONTENT = 0x00000002
 
 LRESULT = ctypes.c_ssize_t
 WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM)
@@ -158,6 +162,33 @@ user32.GetDC.argtypes = [wt.HWND]
 user32.ReleaseDC.restype = ctypes.c_int
 user32.ReleaseDC.argtypes = [wt.HWND, wt.HDC]
 
+user32.GetForegroundWindow.restype = wt.HWND
+user32.GetForegroundWindow.argtypes = []
+
+user32.GetDesktopWindow.restype = wt.HWND
+user32.GetDesktopWindow.argtypes = []
+
+user32.GetClassNameW.restype = ctypes.c_int
+user32.GetClassNameW.argtypes = [wt.HWND, wt.LPWSTR, ctypes.c_int]
+
+user32.GetClientRect.restype = ctypes.c_bool
+user32.GetClientRect.argtypes = [wt.HWND, ctypes.POINTER(wt.RECT)]
+
+user32.ClientToScreen.restype = ctypes.c_bool
+user32.ClientToScreen.argtypes = [wt.HWND, ctypes.POINTER(wt.POINT)]
+
+user32.PrintWindow.restype = ctypes.c_bool
+user32.PrintWindow.argtypes = [wt.HWND, wt.HDC, wt.UINT]
+
+gdi32.CreateCompatibleDC.restype = wt.HDC
+gdi32.CreateCompatibleDC.argtypes = [wt.HDC]
+
+gdi32.CreateCompatibleBitmap.restype = HGDIOBJ
+gdi32.CreateCompatibleBitmap.argtypes = [wt.HDC, ctypes.c_int, ctypes.c_int]
+
+gdi32.DeleteDC.restype = ctypes.c_bool
+gdi32.DeleteDC.argtypes = [wt.HDC]
+
 gdi32.CreateEllipticRgn.restype = wt.HRGN
 gdi32.CreateEllipticRgn.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
 
@@ -194,6 +225,12 @@ class ZoomApp:
         self.debug = False
         self.zoom = config.ZOOM
         self.size = config.LENS_SIZE
+        self._target_w = 0
+        self._target_h = 0
+        self._memdc = None
+        self._mem_bmp = None
+        self._mem_saved = None
+        self._hinted_target = False
 
     @staticmethod
     def _err_detail(err):
@@ -307,36 +344,70 @@ class ZoomApp:
         gdi32.DeleteObject(pen_w)
         gdi32.SelectObject(hdc, old_brush)
 
+    def _ensure_target_surface(self, w, h):
+        if self._memdc and self._target_w == w and self._target_h == h:
+            return
+        if self._memdc:
+            if self._mem_saved:
+                gdi32.SelectObject(self._memdc, self._mem_saved)
+            if self._mem_bmp:
+                gdi32.DeleteObject(self._mem_bmp)
+            gdi32.DeleteDC(self._memdc)
+        self._memdc = gdi32.CreateCompatibleDC(None)
+        self._mem_bmp = gdi32.CreateCompatibleBitmap(None, w, h)
+        self._mem_saved = gdi32.SelectObject(self._memdc, self._mem_bmp)
+        self._target_w = w
+        self._target_h = h
+
+    def _target_window(self):
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            hwnd = user32.GetDesktopWindow()
+        else:
+            cls = ctypes.create_unicode_buffer(64)
+            user32.GetClassNameW(hwnd, cls, len(cls))
+            if cls.value in ("Progman", "WorkerW"):
+                if not self._hinted_target:
+                    print("[i] El foco esta en el escritorio. Para ver el zoom deja"
+                          " otra ventana (p.ej. el Explorador max.) enfocada.", flush=True)
+                    self._hinted_target = True
+        return hwnd
+
     def _draw_lens(self):
         if not self.enabled:
             return
-        user32.ShowWindow(self.host, SW_HIDE)
+        hwnd = self._target_window()
+        rect = wt.RECT()
+        if not user32.GetClientRect(hwnd, ctypes.byref(rect)):
+            return
+        w, h = rect.right, rect.bottom
+        if w <= 0 or h <= 0:
+            return
+        self._ensure_target_surface(w, h)
+        if not user32.PrintWindow(hwnd, self._memdc, PW_RENDERFULLCONTENT):
+            if self.debug:
+                print(f"[debug] PrintWindow fallo (hwnd={hwnd:#x}), conservando ultimo frame", flush=True)
+            return
+        hdc_host = user32.GetDC(self.host)
+        if not hdc_host:
+            return
         try:
-            hdc_screen = user32.GetDC(None)
-            hdc_host = user32.GetDC(self.host)
-            if hdc_screen and hdc_host:
-                gdi32.SetStretchBltMode(hdc_host, HALFTONE)
-                cx, cy = self.screen_center()
-                srcw = max(1, int(round(self.size / self.zoom)))
-                gdi32.StretchBlt(
-                    hdc_host, 0, 0, self.size, self.size,
-                    hdc_screen, cx - srcw // 2, cy - srcw // 2, srcw, srcw,
-                    SRCCOPY,
-                )
-                if config.LENS_ROUNDED:
-                    self._draw_border(hdc_host)
-            elif self.debug:
-                print(f"[debug] GetDC -> screen={hdc_screen:#x} host={hdc_host:#x}", flush=True)
-            if hdc_screen:
-                user32.ReleaseDC(None, hdc_screen)
-            if hdc_host:
-                user32.ReleaseDC(self.host, hdc_host)
-        finally:
-            user32.SetWindowPos(
-                self.host, HWND_TOPMOST,
-                0, 0, 0, 0,
-                SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+            gdi32.SetStretchBltMode(hdc_host, HALFTONE)
+            pt = wt.POINT(0, 0)
+            user32.ClientToScreen(hwnd, ctypes.byref(pt))
+            cx, cy = self.screen_center()
+            srcw = max(1, int(round(self.size / self.zoom)))
+            srcx = (cx - pt.x) - srcw // 2
+            srcy = (cy - pt.y) - srcw // 2
+            gdi32.StretchBlt(
+                hdc_host, 0, 0, self.size, self.size,
+                self._memdc, srcx, srcy, srcw, srcw,
+                SRCCOPY,
             )
+            if config.LENS_ROUNDED:
+                self._draw_border(hdc_host)
+        finally:
+            user32.ReleaseDC(self.host, hdc_host)
 
     def _refresh(self):
         if self.enabled:
@@ -403,6 +474,12 @@ class ZoomApp:
         user32.UnregisterHotKey(self.host, ID_ZOOM_OUT)
         user32.UnregisterHotKey(self.host, ID_SIZE_UP)
         user32.UnregisterHotKey(self.host, ID_SIZE_DOWN)
+        if self._memdc:
+            if self._mem_saved:
+                gdi32.SelectObject(self._memdc, self._mem_saved)
+            if self._mem_bmp:
+                gdi32.DeleteObject(self._mem_bmp)
+            gdi32.DeleteDC(self._memdc)
         if self.host:
             user32.DestroyWindow(self.host)
 
