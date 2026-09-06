@@ -26,6 +26,7 @@ Seguridad (por que es externo y de riesgo bajo):
 
 import ctypes
 import ctypes.wintypes as wt
+import os
 import sys
 
 import config
@@ -201,6 +202,17 @@ class ZoomApp:
         except Exception:
             return f"codigo de error {err:#010x}"
 
+    @staticmethod
+    def _log_error(exc):
+        text = "[ERROR] " + repr(exc)
+        print(text, file=sys.stderr, flush=True)
+        try:
+            path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "error.log")
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(text + "\n")
+        except Exception:
+            pass
+
     def _make_dpi_aware(self):
         if shcore is not None:
             try:
@@ -238,11 +250,17 @@ class ZoomApp:
 
     def _register_hotkeys(self):
         mods = config.HOTKEY_MODS
-        user32.RegisterHotKey(self.host, ID_TOGGLE, mods, config.HOTKEY_TOGGLE)
-        user32.RegisterHotKey(self.host, ID_ZOOM_IN, mods, config.HOTKEY_ZOOM_IN)
-        user32.RegisterHotKey(self.host, ID_ZOOM_OUT, mods, config.HOTKEY_ZOOM_OUT)
-        user32.RegisterHotKey(self.host, ID_SIZE_UP, mods, config.HOTKEY_SIZE_UP)
-        user32.RegisterHotKey(self.host, ID_SIZE_DOWN, mods, config.HOTKEY_SIZE_DOWN)
+        for ident, key in (
+            (ID_TOGGLE, config.HOTKEY_TOGGLE),
+            (ID_ZOOM_IN, config.HOTKEY_ZOOM_IN),
+            (ID_ZOOM_OUT, config.HOTKEY_ZOOM_OUT),
+            (ID_SIZE_UP, config.HOTKEY_SIZE_UP),
+            (ID_SIZE_DOWN, config.HOTKEY_SIZE_DOWN),
+        ):
+            if not user32.RegisterHotKey(self.host, ident, mods, key):
+                err = ctypes.get_last_error()
+                if self.debug:
+                    print(f"[debug] RegisterHotKey id={ident} fallo: {self._err_detail(err)}", flush=True)
 
     def setup(self):
         self._make_dpi_aware()
@@ -307,6 +325,8 @@ class ZoomApp:
                 )
                 if config.LENS_ROUNDED:
                     self._draw_border(hdc_host)
+            elif self.debug:
+                print(f"[debug] GetDC -> screen={hdc_screen:#x} host={hdc_host:#x}", flush=True)
             if hdc_screen:
                 user32.ReleaseDC(None, hdc_screen)
             if hdc_host:
@@ -325,12 +345,13 @@ class ZoomApp:
     def toggle(self):
         self.enabled = not self.enabled
         if self.enabled:
+            print("[+] Activando lente...", flush=True)
             self.layout()
             self._draw_lens()
-            print("[+] Lente activada")
+            print("[+] Lente activada", flush=True)
         else:
             user32.ShowWindow(self.host, SW_HIDE)
-            print("[-] Lente desactivada")
+            print("[-] Lente desactivada", flush=True)
 
     def resize(self, delta):
         nuevo = self.size + delta
@@ -360,14 +381,18 @@ class ZoomApp:
             self.resize(-config.LENS_STEP)
 
     def _on_message(self, hwnd, msg, wparam, lparam):
-        if msg == WM_HOTKEY:
-            self._on_hotkey(wparam)
-            return 0
-        if msg == WM_TIMER and wparam == ID_TIMER_REFRESH:
-            self._refresh()
-            return 0
-        if msg == WM_DESTROY:
-            user32.PostQuitMessage(0)
+        try:
+            if msg == WM_HOTKEY:
+                self._on_hotkey(wparam)
+                return 0
+            if msg == WM_TIMER and wparam == ID_TIMER_REFRESH:
+                self._refresh()
+                return 0
+            if msg == WM_DESTROY:
+                user32.PostQuitMessage(0)
+                return 0
+        except Exception as exc:
+            self._log_error(exc)
             return 0
         return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
@@ -383,22 +408,31 @@ class ZoomApp:
 
 
 def main():
+    print("Iniciando lente de zoom...", flush=True)
     app = ZoomApp()
     app.debug = "--debug" in sys.argv
     try:
         app.setup()
     except Exception as exc:
-        print("[ERROR]", exc)
+        print("[ERROR]", exc, flush=True)
+        app._log_error(exc)
         sys.exit(1)
 
-    print("Lente de zoom lista. Hotkeys con Alt:")
-    print("  Alt+X          activar/desactivar")
-    print("  Alt+Flechas    ajustar zoom y tamano de la lente")
-    print("  Cierra la consola o Ctrl+C para salir.")
+    print("Lente de zoom lista. Hotkeys con Alt:", flush=True)
+    print("  Alt+X          activar/desactivar", flush=True)
+    print("  Alt+Flechas    ajustar zoom y tamano de la lente", flush=True)
+    print("  Cierra la consola o Ctrl+C para salir.", flush=True)
 
     msg = wt.MSG()
     try:
-        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
+        while True:
+            result = user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
+            if result == 0:
+                break
+            if result == -1:
+                err = ctypes.get_last_error()
+                print("[ERROR] GetMessage fallo: " + repr(ctypes.WinError(err)), flush=True)
+                break
             user32.TranslateMessage(ctypes.byref(msg))
             user32.DispatchMessageW(ctypes.byref(msg))
     except KeyboardInterrupt:
