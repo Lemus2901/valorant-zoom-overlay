@@ -1,7 +1,7 @@
-"""Lente de zoom externa para Valorant (ventana tipo lupa sobre el centro de pantalla).
+"""Lente de zoom externa para Valorant (lupa sobre el centro de pantalla).
 
 Uso (Windows, Python 3.x sin dependencias de terceros):
-    python zoom_overlay.py
+    python zoom_overlay.py [--debug]
 
 Hotkeys por defecto (todas con Alt):
     Alt + X          activar / desactivar la lente
@@ -13,8 +13,10 @@ Hotkeys por defecto (todas con Alt):
 Seguridad (por que es externo y de riesgo bajo):
     - No inyecta DLLs, no lee memoria del juego, no modifica archivos del juego,
       no automatiza entrada.
-    - Usa la Magnification API de Windows (composicion DWM), la misma tecnologia
-      del Magnificador del sistema operativo.
+    - Captura GDI pura (BitBlt/StretchBlt) del sector de pantalla debajo de la
+      lente y lo estira sobre una ventana transparente al mouse: no usa la
+      Magnification API ni ninguna clase de Windows, por lo que no hay nada que
+      dependa del registro de clases del sistema.
     - Ventana WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE:
       no roba foco ni clics y pertenece a la clase de overlays que Vanguard tolera
       (mismo precedente que Discord / Steam / OBS).
@@ -31,16 +33,12 @@ import config
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
-magnification = ctypes.WinDLL("Magnification.dll", use_last_error=True)
 try:
     shcore = ctypes.windll.shcore
 except Exception:
     shcore = None
 
 WS_POPUP = 0x80000000
-WS_CHILD = 0x40000000
-WS_VISIBLE = 0x10000000
-WS_CLIPSIBLINGS = 0x04000000
 WS_CLIPCHILDREN = 0x02000000
 
 WS_EX_TOPMOST = 0x00000008
@@ -53,8 +51,8 @@ SW_SHOWNOACTIVATE = 4
 HWND_TOPMOST = -1
 SWP_NOACTIVATE = 0x0010
 SWP_SHOWWINDOW = 0x0040
-
-GWLP_WNDPROC = -4
+SWP_NOMOVE = 0x0002
+SWP_NOSIZE = 0x0001
 
 LWA_ALPHA = 0x00000002
 
@@ -69,24 +67,15 @@ ID_SIZE_UP = 4
 ID_SIZE_DOWN = 5
 ID_TIMER_REFRESH = 100
 
+SRCCOPY = 0x00CC0020
+HALFTONE = 4
+PS_SOLID = 0
+NULL_BRUSH = 5
+
 LRESULT = ctypes.c_ssize_t
 WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM)
 HCURSOR = wt.HANDLE
-
-
-class MAG_RECT(ctypes.Structure):
-    _fields_ = [
-        ("left", ctypes.c_float),
-        ("top", ctypes.c_float),
-        ("right", ctypes.c_float),
-        ("bottom", ctypes.c_float),
-    ]
-
-
-class MAGTRANSFORM(ctypes.Structure):
-    _fields_ = [
-        ("m", (ctypes.c_float * 3) * 3),
-    ]
+HGDIOBJ = wt.HANDLE
 
 
 class WNDCLASSEXW(ctypes.Structure):
@@ -125,9 +114,6 @@ user32.CreateWindowExW.argtypes = [
 user32.SetLayeredWindowAttributes.restype = ctypes.c_bool
 user32.SetLayeredWindowAttributes.argtypes = [wt.HWND, wt.DWORD, wt.BYTE, wt.DWORD]
 
-user32.GetClassInfoW.restype = ctypes.c_bool
-user32.GetClassInfoW.argtypes = [wt.HINSTANCE, wt.LPCWSTR, ctypes.POINTER(WNDCLASSEXW)]
-
 user32.DefWindowProcW.restype = LRESULT
 user32.DefWindowProcW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
 
@@ -136,9 +122,6 @@ user32.SetTimer.argtypes = [wt.HWND, ctypes.c_void_p, wt.UINT, ctypes.c_void_p]
 
 user32.KillTimer.restype = ctypes.c_bool
 user32.KillTimer.argtypes = [wt.HWND, ctypes.c_void_p]
-
-user32.InvalidateRect.restype = ctypes.c_bool
-user32.InvalidateRect.argtypes = [wt.HWND, ctypes.c_void_p, ctypes.c_bool]
 
 user32.SetWindowPos.restype = ctypes.c_bool
 user32.SetWindowPos.argtypes = [
@@ -162,26 +145,49 @@ user32.PostQuitMessage.argtypes = [ctypes.c_int]
 user32.GetMessageW.restype = ctypes.c_int
 user32.GetMessageW.argtypes = [ctypes.POINTER(wt.MSG), wt.HWND, wt.UINT, wt.UINT]
 
+user32.TranslateMessage.restype = ctypes.c_bool
+user32.TranslateMessage.argtypes = [ctypes.POINTER(wt.MSG)]
+
+user32.DispatchMessageW.restype = LRESULT
+user32.DispatchMessageW.argtypes = [ctypes.POINTER(wt.MSG)]
+
+user32.GetDC.restype = wt.HDC
+user32.GetDC.argtypes = [wt.HWND]
+
+user32.ReleaseDC.restype = ctypes.c_int
+user32.ReleaseDC.argtypes = [wt.HWND, wt.HDC]
+
 gdi32.CreateEllipticRgn.restype = wt.HRGN
 gdi32.CreateEllipticRgn.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
 
-magnification.MagInitialize.restype = ctypes.c_bool
-magnification.MagInitialize.argtypes = []
+gdi32.SetStretchBltMode.restype = ctypes.c_int
+gdi32.SetStretchBltMode.argtypes = [wt.HDC, ctypes.c_int]
 
-magnification.MagUninitialize.restype = ctypes.c_bool
-magnification.MagUninitialize.argtypes = []
+gdi32.StretchBlt.restype = ctypes.c_bool
+gdi32.StretchBlt.argtypes = [
+    wt.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+    wt.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wt.DWORD,
+]
 
-magnification.MagSetWindowSource.restype = ctypes.c_bool
-magnification.MagSetWindowSource.argtypes = [wt.HWND, MAG_RECT]
+gdi32.CreatePen.restype = HGDIOBJ
+gdi32.CreatePen.argtypes = [ctypes.c_int, ctypes.c_int, wt.DWORD]
 
-magnification.MagSetWindowTransform.restype = ctypes.c_bool
-magnification.MagSetWindowTransform.argtypes = [wt.HWND, ctypes.POINTER(MAGTRANSFORM)]
+gdi32.SelectObject.restype = HGDIOBJ
+gdi32.SelectObject.argtypes = [wt.HDC, HGDIOBJ]
+
+gdi32.DeleteObject.restype = ctypes.c_bool
+gdi32.DeleteObject.argtypes = [HGDIOBJ]
+
+gdi32.GetStockObject.restype = HGDIOBJ
+gdi32.GetStockObject.argtypes = [ctypes.c_int]
+
+gdi32.Ellipse.restype = ctypes.c_bool
+gdi32.Ellipse.argtypes = [wt.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
 
 
 class ZoomApp:
     def __init__(self):
         self.host = None
-        self.mag_window = None
         self.wnd_proc_ref = None
         self.enabled = False
         self.debug = False
@@ -215,34 +221,7 @@ class ZoomApp:
             err = ctypes.get_last_error()
             raise RuntimeError("RegisterClassExW de la ventana host fallo: " + self._err_detail(err))
 
-    def _class_exists(self, hinst):
-        info = WNDCLASSEXW()
-        info.cbSize = ctypes.sizeof(WNDCLASSEXW)
-        return bool(user32.GetClassInfoW(hinst, "ScreenMagnifier", ctypes.byref(info)))
-
-    def _ensure_magnifier_class(self):
-        if self._class_exists(None):
-            if self.debug:
-                print("[debug] Clase ScreenMagnifier presente (sistema)")
-            return
-        hmod = kernel32.GetModuleHandleW("Magnification.dll")
-        if hmod and self._class_exists(hmod):
-            if self.debug:
-                print("[debug] Clase ScreenMagnifier presente (registrada por Magnification.dll)")
-            return
-        if self.debug:
-            print("[debug] Clase ScreenMagnifier NO registrada -> la registro manualmente")
-        wc = WNDCLASSEXW()
-        wc.cbSize = ctypes.sizeof(WNDCLASSEXW)
-        wc.lpfnWndProc = ctypes.cast(user32.DefWindowProcW, WNDPROC)
-        wc.hInstance = kernel32.GetModuleHandleW(None)
-        wc.lpszClassName = "ScreenMagnifier"
-        if not user32.RegisterClassExW(ctypes.byref(wc)):
-            err = ctypes.get_last_error()
-            if self.debug:
-                print("[debug] Registro manual de ScreenMagnifier fallo:", self._err_detail(err))
-
-    def _create_windows(self):
+    def _create_window(self):
         ex_style = WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE
         self.host = user32.CreateWindowExW(
             ex_style,
@@ -254,19 +233,8 @@ class ZoomApp:
         )
         if not self.host:
             err = ctypes.get_last_error()
-            raise RuntimeError("No se pudo crear la ventana host: " + self._err_detail(err))
+            raise RuntimeError("No se pudo crear la ventana lente: " + self._err_detail(err))
         user32.SetLayeredWindowAttributes(self.host, 0, 255, LWA_ALPHA)
-        self.mag_window = user32.CreateWindowExW(
-            0,
-            "ScreenMagnifier",
-            None,
-            WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
-            0, 0, self.size, self.size,
-            self.host, None, kernel32.GetModuleHandleW(None), None,
-        )
-        if not self.mag_window:
-            err = ctypes.get_last_error()
-            raise RuntimeError("No se pudo crear la ventana magnifier: " + self._err_detail(err))
 
     def _register_hotkeys(self):
         mods = config.HOTKEY_MODS
@@ -278,21 +246,17 @@ class ZoomApp:
 
     def setup(self):
         self._make_dpi_aware()
-        if not magnification.MagInitialize():
-            raise RuntimeError("MagInitialize fallo: la API de magnificacion no se pudo inicializar")
         if self.debug:
-            print("[debug] MagInitialize() OK")
             arch = "x64" if ctypes.sizeof(ctypes.c_void_p) * 8 == 64 else "x86"
             print(f"[debug] Python {arch} | exec: {sys.executable}")
-        self._ensure_magnifier_class()
         self._register_class()
-        self._create_windows()
+        self._create_window()
         self._register_hotkeys()
         self._apply_region()
         user32.SetTimer(self.host, ID_TIMER_REFRESH, config.REFRESH_MS, None)
         if self.debug:
-            print(f"[debug] host={self.host:#x} mag_window={self.mag_window:#x}"
-                  f" zoom={self.zoom} size={self.size} refresh={config.REFRESH_MS}ms")
+            print(f"[debug] host={self.host:#x} zoom={self.zoom} size={self.size}"
+                  f" refresh={config.REFRESH_MS}ms")
 
     def screen_center(self):
         return user32.GetSystemMetrics(0) // 2, user32.GetSystemMetrics(1) // 2
@@ -310,31 +274,59 @@ class ZoomApp:
             cx - half, cy - half, self.size, self.size,
             SWP_NOACTIVATE | SWP_SHOWWINDOW,
         )
-        source = MAG_RECT(
-            cx - self.size / (2.0 * self.zoom),
-            cy - self.size / (2.0 * self.zoom),
-            cx + self.size / (2.0 * self.zoom),
-            cy + self.size / (2.0 * self.zoom),
-        )
-        magnification.MagSetWindowSource(self.mag_window, source)
-        transform = MAGTRANSFORM()
-        transform.m[0][0] = self.zoom
-        transform.m[1][1] = self.zoom
-        transform.m[2][2] = 1.0
-        magnification.MagSetWindowTransform(self.mag_window, ctypes.byref(transform))
 
-    def _refresh(self):
+    def _draw_border(self, hdc):
+        old_brush = gdi32.SelectObject(hdc, gdi32.GetStockObject(NULL_BRUSH))
+        pen_b = gdi32.CreatePen(PS_SOLID, 3, 0x00000000)
+        old_pen = gdi32.SelectObject(hdc, pen_b)
+        gdi32.Ellipse(hdc, 0, 0, self.size, self.size)
+        gdi32.SelectObject(hdc, old_pen)
+        gdi32.DeleteObject(pen_b)
+        pen_w = gdi32.CreatePen(PS_SOLID, 1, 0x00FFFFFF)
+        gdi32.SelectObject(hdc, pen_w)
+        gdi32.Ellipse(hdc, 3, 3, self.size - 3, self.size - 3)
+        gdi32.SelectObject(hdc, old_pen)
+        gdi32.DeleteObject(pen_w)
+        gdi32.SelectObject(hdc, old_brush)
+
+    def _draw_lens(self):
         if not self.enabled:
             return
-        self.layout()
-        user32.InvalidateRect(self.mag_window, None, True)
+        user32.ShowWindow(self.host, SW_HIDE)
+        try:
+            hdc_screen = user32.GetDC(None)
+            hdc_host = user32.GetDC(self.host)
+            if hdc_screen and hdc_host:
+                gdi32.SetStretchBltMode(hdc_host, HALFTONE)
+                cx, cy = self.screen_center()
+                srcw = max(1, int(round(self.size / self.zoom)))
+                gdi32.StretchBlt(
+                    hdc_host, 0, 0, self.size, self.size,
+                    hdc_screen, cx - srcw // 2, cy - srcw // 2, srcw, srcw,
+                    SRCCOPY,
+                )
+                if config.LENS_ROUNDED:
+                    self._draw_border(hdc_host)
+            if hdc_screen:
+                user32.ReleaseDC(None, hdc_screen)
+            if hdc_host:
+                user32.ReleaseDC(self.host, hdc_host)
+        finally:
+            user32.SetWindowPos(
+                self.host, HWND_TOPMOST,
+                0, 0, 0, 0,
+                SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+            )
+
+    def _refresh(self):
+        if self.enabled:
+            self._draw_lens()
 
     def toggle(self):
         self.enabled = not self.enabled
         if self.enabled:
             self.layout()
-            self._apply_region()
-            user32.ShowWindow(self.host, SW_SHOWNOACTIVATE)
+            self._draw_lens()
             print("[+] Lente activada")
         else:
             user32.ShowWindow(self.host, SW_HIDE)
@@ -347,11 +339,13 @@ class ZoomApp:
             self._apply_region()
             if self.enabled:
                 self.layout()
+                self._draw_lens()
 
     def set_zoom(self, zoom):
         self.zoom = max(config.ZOOM_MIN, min(config.ZOOM_MAX, zoom))
         if self.enabled:
             self.layout()
+            self._draw_lens()
 
     def _on_hotkey(self, hotkey_id):
         if hotkey_id == ID_TOGGLE:
@@ -386,7 +380,6 @@ class ZoomApp:
         user32.UnregisterHotKey(self.host, ID_SIZE_DOWN)
         if self.host:
             user32.DestroyWindow(self.host)
-        magnification.MagUninitialize()
 
 
 def main():

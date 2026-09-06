@@ -2,7 +2,7 @@
 
 Lente de zoom externa para Valorant: una ventana tipo lupa dibujada sobre el centro de la pantalla que hace zoom en la mira **sin perder visión periférica**. Se activa/desactiva con una hotkey.
 
-> **Aviso de seguridad:** herramienta 100% externa — **no** inyecta DLLs, **no** lee memoria del juego, **no** modifica archivos del juego ni automatiza entrada. Usa la Magnification API de Windows (la misma del Magnificador del sistema) y la clase de ventana overlay que Vanguard tolera (precedente: Discord / Steam / OBS). Aun así, no hay garantía permanente: usa una cuenta de prueba y bajo tu propio riesgo. Requiere **Valorant en modo Borderless** (el fullscreen exclusivo oculta cualquier overlay).
+> **Aviso de seguridad:** herramienta 100% externa — **no** inyecta DLLs, **no** lee memoria del juego, **no** modifica archivos del juego ni automatiza entrada. Captura y estira el sector de pantalla debajo del crosshair con GDI puro (`BitBlt`/`StretchBlt`), sin tocar la Magnification API del sistema, y usa la clase de ventana overlay que Vanguard tolera (precedente: Discord / Steam / OBS). Aun así, no hay garantía permanente: usa una cuenta de prueba y bajo tu propio riesgo. Requiere **Valorant en modo Borderless** (el fullscreen exclusivo oculta cualquier overlay).
 
 ## Requisitos
 
@@ -45,7 +45,14 @@ Edita `config.py` y reinicia el programa:
 | `LENS_SIZE` | Tamaño inicial de la lente en píxeles |
 | `LENS_MIN` / `LENS_MAX` | Límites de tamaño al redimensionar |
 | `LENS_ROUNDED` | `True` = lente circular, `False` = cuadrada |
+| `REFRESH_MS` | Milisegundos entre refrescos de la lente (16 = ~60 FPS, 33 = ~30 FPS) |
 | `HOTKEY_TOGGLE`, `HOTKEY_ZOOM_IN`, `HOTKEY_ZOOM_OUT`, `HOTKEY_SIZE_UP`, `HOTKEY_SIZE_DOWN` | Códigos de tecla de Virtual-Key |
+
+## Depuración
+
+Ejecuta `run.bat --debug` (o `python zoom_overlay.py --debug`) para imprimir
+arquitectura de Python, el handle de la ventana y la configuración activa. Si la
+lente parpadea, sube `REFRESH_MS` a `33`.
 
 ## Consejos
 
@@ -57,7 +64,7 @@ Edita `config.py` y reinicia el programa:
 
 ```
 valorant_zoom/
-├── zoom_overlay.py   Código principal (ventana + magificación)
+├── zoom_overlay.py   Código principal (ventana lupa + captura GDI)
 ├── config.py         Configuración editable
 └── run.bat           Lanzador para Windows
 ```
