@@ -1,0 +1,334 @@
+"""Lente de zoom externa para Valorant (ventana tipo lupa sobre el centro de pantalla).
+
+Uso (Windows, Python 3.x sin dependencias de terceros):
+    python zoom_overlay.py
+
+Hotkeys por defecto (todas con Alt):
+    Alt + X          activar / desactivar la lente
+    Alt + Flecha Arriba    subir zoom
+    Alt + Flecha Abajo     bajar zoom
+    Alt + Flecha Derecha   agrandar lente
+    Alt + Flecha Izquierda achicar lente
+
+Seguridad (por que es externo y de riesgo bajo):
+    - No inyecta DLLs, no lee memoria del juego, no modifica archivos del juego,
+      no automatiza entrada.
+    - Usa la Magnification API de Windows (composicion DWM), la misma tecnologia
+      del Magnificador del sistema operativo.
+    - Ventana WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE:
+      no roba foco ni clics y pertenece a la clase de overlays que Vanguard tolera
+      (mismo precedente que Discord / Steam / OBS).
+    - Requiere Valorant en modo Borderless; el fullscreen exclusivo oculta
+      cualquier overlay a nivel de sistema operativo.
+"""
+
+import ctypes
+import ctypes.wintypes as wt
+import sys
+
+import config
+
+user32 = ctypes.windll.user32
+gdi32 = ctypes.windll.gdi32
+magnification = ctypes.WinDLL("Magnification.dll")
+shcore = getattr(ctypes.windll, "shcore", None)
+
+WS_POPUP = 0x80000000
+WS_CHILD = 0x40000000
+WS_VISIBLE = 0x10000000
+WS_CLIPSIBLINGS = 0x04000000
+WS_CLIPCHILDREN = 0x02000000
+
+WS_EX_TOPMOST = 0x00000008
+WS_EX_TRANSPARENT = 0x00000020
+WS_EX_LAYERED = 0x00080000
+WS_EX_NOACTIVATE = 0x08000000
+
+SW_HIDE = 0
+SW_SHOWNOACTIVATE = 4
+HWND_TOPMOST = -1
+SWP_NOACTIVATE = 0x0010
+SWP_SHOWWINDOW = 0x0040
+
+GWLP_WNDPROC = -4
+
+WM_HOTKEY = 0x0312
+WM_DESTROY = 0x0002
+
+ID_TOGGLE = 1
+ID_ZOOM_IN = 2
+ID_ZOOM_OUT = 3
+ID_SIZE_UP = 4
+ID_SIZE_DOWN = 5
+
+LRESULT = ctypes.c_ssize_t
+WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM)
+HCURSOR = wt.HANDLE
+
+
+class MAG_RECT(ctypes.Structure):
+    _fields_ = [
+        ("left", ctypes.c_float),
+        ("top", ctypes.c_float),
+        ("right", ctypes.c_float),
+        ("bottom", ctypes.c_float),
+    ]
+
+
+class MAGTRANSFORM(ctypes.Structure):
+    _fields_ = [
+        ("m", (ctypes.c_float * 3) * 3),
+    ]
+
+
+class WNDCLASSEXW(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wt.UINT),
+        ("style", wt.UINT),
+        ("lpfnWndProc", WNDPROC),
+        ("cbClsExtra", ctypes.c_int),
+        ("cbWndExtra", ctypes.c_int),
+        ("hInstance", wt.HINSTANCE),
+        ("hIcon", wt.HICON),
+        ("hCursor", HCURSOR),
+        ("hbrBackground", wt.HBRUSH),
+        ("lpszMenuName", wt.LPCWSTR),
+        ("lpszClassName", wt.LPCWSTR),
+        ("hIconSm", wt.HICON),
+    ]
+
+
+user32.GetSystemMetrics.restype = ctypes.c_int
+user32.GetSystemMetrics.argtypes = [ctypes.c_int]
+
+user32.GetModuleHandleW.restype = wt.HINSTANCE
+user32.GetModuleHandleW.argtypes = [wt.LPCWSTR]
+
+user32.RegisterClassExW.restype = wt.ATOM
+user32.RegisterClassExW.argtypes = [ctypes.POINTER(WNDCLASSEXW)]
+
+user32.CreateWindowExW.restype = wt.HWND
+user32.CreateWindowExW.argtypes = [
+    wt.DWORD, wt.LPCWSTR, wt.LPCWSTR, wt.DWORD,
+    ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+    wt.HWND, wt.HMENU, wt.HINSTANCE, wt.LPVOID,
+]
+
+user32.DefWindowProcW.restype = LRESULT
+user32.DefWindowProcW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
+
+user32.SetWindowPos.restype = ctypes.c_bool
+user32.SetWindowPos.argtypes = [
+    wt.HWND, wt.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wt.UINT,
+]
+
+user32.ShowWindow.restype = ctypes.c_bool
+user32.ShowWindow.argtypes = [wt.HWND, ctypes.c_int]
+
+user32.RegisterHotKey.restype = ctypes.c_bool
+user32.RegisterHotKey.argtypes = [wt.HWND, ctypes.c_int, wt.UINT, wt.UINT]
+
+user32.UnregisterHotKey.restype = ctypes.c_bool
+user32.UnregisterHotKey.argtypes = [wt.HWND, ctypes.c_int]
+
+user32.SetWindowRgn.restype = ctypes.c_int
+user32.SetWindowRgn.argtypes = [wt.HWND, wt.HRGN, ctypes.c_bool]
+
+user32.PostQuitMessage.argtypes = [ctypes.c_int]
+
+user32.GetMessageW.restype = ctypes.c_int
+user32.GetMessageW.argtypes = [ctypes.POINTER(wt.MSG), wt.HWND, wt.UINT, wt.UINT]
+
+gdi32.CreateEllipticRgn.restype = wt.HRGN
+gdi32.CreateEllipticRgn.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+
+magnification.MagInitialize.restype = ctypes.c_bool
+magnification.MagInitialize.argtypes = []
+
+magnification.MagUninitialize.restype = ctypes.c_bool
+magnification.MagUninitialize.argtypes = []
+
+magnification.MagSetWindowSource.restype = ctypes.c_bool
+magnification.MagSetWindowSource.argtypes = [wt.HWND, MAG_RECT]
+
+magnification.MagSetWindowTransform.restype = ctypes.c_bool
+magnification.MagSetWindowTransform.argtypes = [wt.HWND, ctypes.POINTER(MAGTRANSFORM)]
+
+
+class ZoomApp:
+    def __init__(self):
+        self.host = None
+        self.mag_window = None
+        self.wnd_proc_ref = None
+        self.enabled = False
+        self.zoom = config.ZOOM
+        self.size = config.LENS_SIZE
+
+    def _make_dpi_aware(self):
+        if shcore is not None:
+            try:
+                shcore.SetProcessDpiAwareness(2)
+                return
+            except Exception:
+                pass
+        user32.SetProcessDPIAware()
+
+    def _register_class(self):
+        self.wnd_proc_ref = WNDPROC(self._on_message)
+        wc = WNDCLASSEXW()
+        wc.cbSize = ctypes.sizeof(WNDCLASSEXW)
+        wc.lpfnWndProc = self.wnd_proc_ref
+        wc.hInstance = user32.GetModuleHandleW(None)
+        wc.lpszClassName = "ValorantZoomHost"
+        if not user32.RegisterClassExW(ctypes.byref(wc)):
+            raise RuntimeError("RegisterClassExW fallo")
+
+    def _create_windows(self):
+        ex_style = WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE
+        self.host = user32.CreateWindowExW(
+            ex_style,
+            "ValorantZoomHost",
+            "ValorantZoom",
+            WS_POPUP,
+            0, 0, self.size, self.size,
+            None, None, user32.GetModuleHandleW(None), None,
+        )
+        self.mag_window = user32.CreateWindowExW(
+            0,
+            "ScreenMagnifier",
+            None,
+            WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
+            0, 0, self.size, self.size,
+            self.host, None, user32.GetModuleHandleW(None), None,
+        )
+        if not self.host or not self.mag_window:
+            raise RuntimeError("No se pudieron crear las ventanas")
+
+    def _register_hotkeys(self):
+        mods = config.HOTKEY_MODS
+        user32.RegisterHotKey(self.host, ID_TOGGLE, mods, config.HOTKEY_TOGGLE)
+        user32.RegisterHotKey(self.host, ID_ZOOM_IN, mods, config.HOTKEY_ZOOM_IN)
+        user32.RegisterHotKey(self.host, ID_ZOOM_OUT, mods, config.HOTKEY_ZOOM_OUT)
+        user32.RegisterHotKey(self.host, ID_SIZE_UP, mods, config.HOTKEY_SIZE_UP)
+        user32.RegisterHotKey(self.host, ID_SIZE_DOWN, mods, config.HOTKEY_SIZE_DOWN)
+
+    def setup(self):
+        self._make_dpi_aware()
+        if not magnification.MagInitialize():
+            raise RuntimeError("MagInitialize fallo: Magnification API no disponible")
+        self._register_class()
+        self._create_windows()
+        self._register_hotkeys()
+        self._apply_region()
+
+    def screen_center(self):
+        return user32.GetSystemMetrics(0) // 2, user32.GetSystemMetrics(1) // 2
+
+    def _apply_region(self):
+        if config.LENS_ROUNDED:
+            rgn = gdi32.CreateEllipticRgn(0, 0, self.size, self.size)
+            user32.SetWindowRgn(self.host, rgn, True)
+
+    def layout(self):
+        cx, cy = self.screen_center()
+        half = self.size // 2
+        user32.SetWindowPos(
+            self.host, HWND_TOPMOST,
+            cx - half, cy - half, self.size, self.size,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        )
+        source = MAG_RECT(
+            cx - self.size / (2.0 * self.zoom),
+            cy - self.size / (2.0 * self.zoom),
+            cx + self.size / (2.0 * self.zoom),
+            cy + self.size / (2.0 * self.zoom),
+        )
+        magnification.MagSetWindowSource(self.mag_window, source)
+        transform = MAGTRANSFORM()
+        transform.m[0][0] = self.zoom
+        transform.m[1][1] = self.zoom
+        transform.m[2][2] = 1.0
+        magnification.MagSetWindowTransform(self.mag_window, ctypes.byref(transform))
+
+    def toggle(self):
+        self.enabled = not self.enabled
+        if self.enabled:
+            self.layout()
+            self._apply_region()
+            user32.ShowWindow(self.host, SW_SHOWNOACTIVATE)
+            print("[+] Lente activada")
+        else:
+            user32.ShowWindow(self.host, SW_HIDE)
+            print("[-] Lente desactivada")
+
+    def resize(self, delta):
+        nuevo = self.size + delta
+        if config.LENS_MIN <= nuevo <= config.LENS_MAX:
+            self.size = nuevo
+            self._apply_region()
+            if self.enabled:
+                self.layout()
+
+    def set_zoom(self, zoom):
+        self.zoom = max(config.ZOOM_MIN, min(config.ZOOM_MAX, zoom))
+        if self.enabled:
+            self.layout()
+
+    def _on_hotkey(self, hotkey_id):
+        if hotkey_id == ID_TOGGLE:
+            self.toggle()
+        elif hotkey_id == ID_ZOOM_IN:
+            self.set_zoom(self.zoom + config.ZOOM_STEP)
+        elif hotkey_id == ID_ZOOM_OUT:
+            self.set_zoom(self.zoom - config.ZOOM_STEP)
+        elif hotkey_id == ID_SIZE_UP:
+            self.resize(config.LENS_STEP)
+        elif hotkey_id == ID_SIZE_DOWN:
+            self.resize(-config.LENS_STEP)
+
+    def _on_message(self, hwnd, msg, wparam, lparam):
+        if msg == WM_HOTKEY:
+            self._on_hotkey(wparam)
+            return 0
+        if msg == WM_DESTROY:
+            user32.PostQuitMessage(0)
+            return 0
+        return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+    def cleanup(self):
+        user32.UnregisterHotKey(self.host, ID_TOGGLE)
+        user32.UnregisterHotKey(self.host, ID_ZOOM_IN)
+        user32.UnregisterHotKey(self.host, ID_ZOOM_OUT)
+        user32.UnregisterHotKey(self.host, ID_SIZE_UP)
+        user32.UnregisterHotKey(self.host, ID_SIZE_DOWN)
+        if self.host:
+            user32.DestroyWindow(self.host)
+        magnification.MagUninitialize()
+
+
+def main():
+    app = ZoomApp()
+    try:
+        app.setup()
+    except Exception as exc:
+        print("[ERROR]", exc)
+        sys.exit(1)
+
+    print("Lente de zoom lista. Hotkeys con Alt:")
+    print("  Alt+X          activar/desactivar")
+    print("  Alt+Flechas    ajustar zoom y tamano de la lente")
+    print("  Cierra la consola o Ctrl+C para salir.")
+
+    msg = wt.MSG()
+    try:
+        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
+    except KeyboardInterrupt:
+        pass
+    finally:
+        app.cleanup()
+
+
+if __name__ == "__main__":
+    main()
