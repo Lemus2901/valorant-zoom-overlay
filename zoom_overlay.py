@@ -13,14 +13,16 @@ Hotkeys por defecto (todas con Alt):
 Seguridad (por que es externo y de riesgo bajo):
     - No inyecta DLLs, no lee memoria del juego, no modifica archivos del juego,
       no automatiza entrada.
-    - Captura GDI pura: cada frame se renderiza la ventana en primer plano (el
-      juego en modo Borderless) mediante PrintWindow hacia un DC en memoria y el
-      rectangulo central se estira con StretchBlt directamente sobre el DC de la
-      lente. La lente es una ventana normal (sin estilos de capa) dibujada con
-      GDI clasico, que siempre se muestra; los clics la atraviesan via
-      WM_NCHITTEST=HTTRANSPARENT. Al no ocultar la lente nunca se captura la
-      lente a si misma (sin retroalimentacion) y no hay parpadeo. No usa la
-      Magnification API ni el registro de clases de Windows.
+    - Captura GDI pura: cada frame se copia la ventana en primer plano (el
+      juego en modo Borderless) con BitBlt desde el DC de esa ventana (solo
+      renderiza esa ventana, nunca los overlays que la tapan) y, si eso falla,
+      con PrintWindow. El rectangulo central se estira con StretchBlt
+      directamente sobre el DC de la lente. La lente es una ventana normal (sin
+      estilos de capa) dibujada con GDI clasico, que siempre se muestra; los
+      clics la atraviesan via WM_NCHITTEST=HTTRANSPARENT. Al no capturar la
+      pantalla entera nunca se captura la lente a si misma (sin
+      retroalimentacion) y no hay parpadeo. No usa la Magnification API ni el
+      registro de clases de Windows.
     - Ventana WS_EX_TOPMOST | WS_EX_NOACTIVATE con region circular (esquinas
       invisibles): no roba foco ni clics y pertenece a la clase de overlays que
       Vanguard tolera (mismo precedente que Discord / Steam / OBS).
@@ -257,6 +259,7 @@ class ZoomApp:
         self._tgt_bmp = None
         self._tgt_saved = None
         self._hinted_target = False
+        self._warned_bitblt_black = False
 
     @staticmethod
     def _err_detail(err):
@@ -450,12 +453,16 @@ class ZoomApp:
         return hwnd
 
     def _capture_target(self, hwnd, w, h):
-        ok = user32.PrintWindow(hwnd, self._tgt_dc, PW_RENDERFULLCONTENT)
+        hdc_w = user32.GetDC(hwnd)
+        ok = False
+        if hdc_w:
+            ok = gdi32.BitBlt(self._tgt_dc, 0, 0, w, h, hdc_w, 0, 0, SRCCOPY)
+            user32.ReleaseDC(hwnd, hdc_w)
         if not ok:
-            hdc_w = user32.GetDC(hwnd)
-            if hdc_w:
-                ok = gdi32.BitBlt(self._tgt_dc, 0, 0, w, h, hdc_w, 0, 0, SRCCOPY)
-                user32.ReleaseDC(hwnd, hdc_w)
+            ok = user32.PrintWindow(hwnd, self._tgt_dc, PW_RENDERFULLCONTENT)
+            if ok and not self._warned_bitblt_black and self.debug:
+                print("[debug] BitBlt de la ventana no funciono; usando PrintWindow", flush=True)
+                self._warned_bitblt_black = True
         return ok
 
     def _refresh(self):
