@@ -486,7 +486,7 @@ class ZoomApp:
             pos = wt.POINT(cx - half, cy - half)
             dim = wt.SIZE(self.size, self.size)
             origin = wt.POINT(0, 0)
-            blend = BLENDFUNCTION(AC_SRC_OVER, 0, 255, AC_SRC_ALPHA)
+            blend = BLENDFUNCTION(AC_SRC_OVER, 0, 255, 0)
             return user32.UpdateLayeredWindow(
                 self.host, hdc_screen, ctypes.byref(pos), ctypes.byref(dim),
                 self._dib_dc, ctypes.byref(origin), 0, ctypes.byref(blend), ULW_ALPHA,

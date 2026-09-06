@@ -62,6 +62,7 @@ junto al script. Si la lente se ve "suave", sube `REFRESH_MS` a `33`.
 - El crosshair del juego se ve agrandado dentro de la lente: puedes desactivar el crosshair in-game y usar la lente como punto de puntería, o reducir el zoom.
 - Si la lente aparece en negro sobre el juego, cambia a modo Borderless (el fullscreen exclusivo no permite capturar).
 - La lente amplía la ventana que esté enfocada: en juego es Valorant; en el escritorio, la ventana activa.
+- La lente es opaca (los píxeles se presentan con opacidad 255) y las esquinas fuera del círculo las recorta la región de la ventana.
 - Para cerrar: cierra la ventana de consola o pulsa `Ctrl + C`.
 
 ## Estructura
